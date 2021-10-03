@@ -1,0 +1,169 @@
+# coding: latin-1
+"""
+  Provide function MPC computation for the falcon project
+
+  Specifically, this program does in three steps:
+  (1) First, keep waiting enough clients (equals to party_num) connected to this program.
+  (2) Second, once enough clients connected, read the input values and compute the desired function.
+  (3) Third, return the gfp results (in the secret shared form) to the clients.
+
+  Need to set the following parameters before running:
+  (1) ARRAY_SIZE: equals to vector size to be computed;
+  (2) MAX_NUM_CLIENTS: equals to party number;
+  (3) FIXED_F: must be consistent with the SPDZ_PRECISION in the external project;
+  (4) PORT_NUM: equals to the SPDZ_PORT_BASE in the external project;
+
+  Note each client connects in a single thread and so is potentially blocked.
+  Each round / game will reset and so this runs indefinitiely.
+"""
+
+from Compiler.types import sint, regint, Array, MemValue
+from Compiler.library import print_ln, do_while, for_range
+from Compiler.util import if_else
+from Compiler import mpc_math, floatingpoint
+from random import seed, randrange
+from Compiler.program import Program
+import ml
+
+### set the sfix precisions
+FIXED_F = 16
+FIXED_K = 48
+sfix.set_precision(FIXED_F, FIXED_K)
+cfix.set_precision(FIXED_F, FIXED_K)
+
+### set necessary parameters
+MAX_ARRAY_SIZE = 100000
+PORT_NUM = 14000
+MAX_NUM_CLIENTS = 3
+MAX_NBITS = 14
+NULL = -2147483648
+
+### Accept client connections
+def accept_client():
+    client_socket_id = accept_client_connection(PORT_NUM)
+    # print_ln("The client socket id is %s", client_socket_id)
+    return client_socket_id
+
+
+def close_connections(number_clients):
+    @for_range(number_clients)
+    def _(i):
+        closeclientconnection(i)
+
+
+### Receive private input from client_socket_id
+def client_input(client_sockets, num_clients, array_size):
+    client_inputs = sfix.Matrix(MAX_NUM_CLIENTS, MAX_ARRAY_SIZE)
+    tmp_array = Array(1, sint)
+    @for_range(num_clients)
+    def _(i):
+        @for_range(array_size)
+        def _(j):
+            tmp_array = sint.receive_from_client(1, client_sockets[i])
+            client_inputs[i][j] = sfix._new(tmp_array[0])
+    return client_inputs
+
+
+### receive client 0's public parameters
+def client_public_parameters(client_socket_id):
+    array_size_arr = Array(1, cint)
+    array_size_arr[0] = cint.read_from_socket(client_socket_id, 1)
+    return array_size_arr[0]
+
+
+### Compute the add computation given the received secret shares
+def add_comp(client_inputs, array_size):
+    result = Array(MAX_ARRAY_SIZE, sfix)
+    temp = Array(1, sfix)
+    @for_range(array_size)
+    def _(j):
+        temp[0] = 0
+        @for_range(MAX_NUM_CLIENTS)
+        def inner(i):
+            temp[0] = temp[0] + client_inputs[i][j]
+        #print_ln("The temp[0] is %s", temp[0].reveal())
+        result[j] = temp[0]
+        print_ln("The result[j] is %s", result[j].reveal())
+    temp.delete()
+    return result
+
+
+def write_result_to_clients(sockets, number_clients, result, array_size):
+    """
+        Send result to all clients.
+    """
+    sint_result = Array(MAX_ARRAY_SIZE, sint)
+    @for_range(array_size)
+    def _(i):
+        sint_result[i] = result[i].v
+        #print_ln('sint_result[%s] = %s', i, sint_result[i].reveal())
+
+    print_ln('begin to write results to each client')
+    @for_range(number_clients)
+    def loop_body(i):
+        # print_ln('socket[%s] = %s', i, sockets[i])
+        sint.write_shares_to_socket(sockets[i], sint_result)
+
+    sint_result.delete()
+
+def main():
+    """
+        Listen in a while loop for the falcon clients to join the mpc computation.
+        Once maximum number of falcon clients reached, run the computation and return the result.
+    """
+
+    # Start listening on a port for falcon client socket connections
+    listen_for_clients(PORT_NUM)
+    print_ln('Listening for socket connections on base port %s', PORT_NUM)
+
+    # Do while loop for iteratively logistic function computation
+    @do_while
+    def computing_loop():
+        print_ln('Starting a new iteration.')
+
+        # Clients socket id (integer).
+        client_sockets = Array(MAX_NUM_CLIENTS, regint)
+
+        # Number of clients
+        # number_clients = MemValue(regint(0))
+
+        # Clients secret inputs
+        client_values = sfix.Matrix(MAX_NUM_CLIENTS, MAX_ARRAY_SIZE)
+
+        # Keep track of received inputs
+        seen = Array(MAX_NUM_CLIENTS, regint)
+        seen.assign_all(0)
+
+        # step 1: Loop round waiting for each client to connect
+        @do_while
+        def client_connections():
+            client_id = accept_client()
+            @if_(client_id >= MAX_NUM_CLIENTS)
+            def _():
+                print_ln('client id too high')
+                crash()
+            client_sockets[client_id] = client_id
+            seen[client_id] = 1
+            return sum(seen) < MAX_NUM_CLIENTS
+
+        # step 2: receive a public array_size and each client's private input
+        array_size = client_public_parameters(client_sockets[0])
+        client_values = client_input(client_sockets, MAX_NUM_CLIENTS, array_size)
+
+        # step 3: compute the add computation
+        result = sfix.Array(MAX_ARRAY_SIZE)
+        result = add_comp(client_values, array_size)
+
+        # step 4: write values back to the clients
+        write_result_to_clients(client_sockets, MAX_NUM_CLIENTS, result, array_size)
+
+        client_sockets.delete()
+        client_values.delete()
+        seen.delete()
+        result.delete()
+
+        close_connections(MAX_NUM_CLIENTS)
+
+        return True
+
+main()
