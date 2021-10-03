@@ -8,7 +8,5 @@
 #define SPDZ_FIXED_POINT_PRECISION 16
 #define SPDZ_PORT 14000
 #define SPDZ_HOST "localhost"
-#define SPDZ_PLAYER_PATH                                                       \
-  "/home/wuyuncheng/Documents/projects/MP-SPDZ/Player-Data/"
 
 #endif // SPDZ_CODEBASE__COMMON_H_
